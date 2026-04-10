@@ -273,8 +273,16 @@ func withIndexLock(fn func() error) error {
 
 // buildIndex incrementally appends new sessions to the index. If any existing
 // session files changed or disappeared, it rewrites the full index so stale
-// content is replaced cleanly. Returns the number of new or changed sessions
-// processed. Must be called under withIndexLock.
+// content is replaced cleanly. This is intentionally blunt but correct for
+// now; it keeps search simple at the cost of slower updates when a single
+// session file grows.
+//
+// TODO: Replace the full-index rewrite path with a more incremental changed-
+// file update strategy (for example append-only blocks plus metadata/compaction)
+// so growing Codex sessions do not force a full rebuild.
+//
+// Returns the number of new or changed sessions processed. Must be called
+// under withIndexLock.
 func buildIndex(rebuild bool) (int, error) {
 	idxPath := indexPath()
 	allFiles := getAllSessionFileInfos()

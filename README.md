@@ -3,6 +3,9 @@
 Indexes local agent session history from pi, Claude Code, and Codex into a
 flat text index for fast full-text search. Incremental indexing picks up both
 new session files and existing session files that changed since the last index.
+When an already-indexed session file changes, the current implementation
+rewrites the full index file. That is intentionally blunt but correct for now;
+the next optimization is a more incremental changed-file update path.
 
 ## Setup
 
