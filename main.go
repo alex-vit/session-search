@@ -36,6 +36,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -56,6 +57,8 @@ const (
 var (
 	homeDir string
 	version = "dev"
+
+	readBuildInfo = debug.ReadBuildInfo
 )
 
 type sessionFingerprint struct {
@@ -204,11 +207,29 @@ Options:
     --stats         Show index size and session count
     -v, --v, -version, --version
                     Show version
-`, version)
+`, resolvedVersion())
 }
 
 func showVersion() {
-	fmt.Printf("session-search %s\n", version)
+	fmt.Printf("session-search %s\n", resolvedVersion())
+}
+
+func resolvedVersion() string {
+	if version != "" && version != "dev" {
+		return version
+	}
+
+	if info, ok := readBuildInfo(); ok {
+		if info.Main.Version != "" && info.Main.Version != "(devel)" {
+			return info.Main.Version
+		}
+	}
+
+	if version == "" {
+		return "dev"
+	}
+
+	return version
 }
 
 // ensureIndex brings the index up to date if any session files are new,

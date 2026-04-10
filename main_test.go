@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -840,6 +841,22 @@ func TestRun_Help(t *testing.T) {
 }
 
 func TestRun_VersionFlags(t *testing.T) {
+	origVersion := version
+	origReadBuildInfo := readBuildInfo
+	t.Cleanup(func() {
+		version = origVersion
+		readBuildInfo = origReadBuildInfo
+	})
+
+	version = "dev"
+	readBuildInfo = func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{
+			Main: debug.Module{
+				Version: "v1.0.1",
+			},
+		}, true
+	}
+
 	flags := []string{"-v", "--v", "-version", "--version"}
 	for _, flag := range flags {
 		t.Run(flag, func(t *testing.T) {
@@ -849,10 +866,54 @@ func TestRun_VersionFlags(t *testing.T) {
 				}
 			})
 
-			if output != "session-search dev\n" {
+			if output != "session-search v1.0.1\n" {
 				t.Fatalf("unexpected version output for %s: %q", flag, output)
 			}
 		})
+	}
+}
+
+func TestResolvedVersion_FallsBackToDev(t *testing.T) {
+	origVersion := version
+	origReadBuildInfo := readBuildInfo
+	t.Cleanup(func() {
+		version = origVersion
+		readBuildInfo = origReadBuildInfo
+	})
+
+	version = "dev"
+	readBuildInfo = func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{
+			Main: debug.Module{
+				Version: "(devel)",
+			},
+		}, true
+	}
+
+	if got := resolvedVersion(); got != "dev" {
+		t.Fatalf("resolvedVersion() = %q, want %q", got, "dev")
+	}
+}
+
+func TestResolvedVersion_PrefersInjectedVersion(t *testing.T) {
+	origVersion := version
+	origReadBuildInfo := readBuildInfo
+	t.Cleanup(func() {
+		version = origVersion
+		readBuildInfo = origReadBuildInfo
+	})
+
+	version = "v9.9.9"
+	readBuildInfo = func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{
+			Main: debug.Module{
+				Version: "v1.0.1",
+			},
+		}, true
+	}
+
+	if got := resolvedVersion(); got != "v9.9.9" {
+		t.Fatalf("resolvedVersion() = %q, want %q", got, "v9.9.9")
 	}
 }
 
