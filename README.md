@@ -5,10 +5,8 @@ flat text index for fast full-text search.
 
 ## Setup
 
-From this repo:
-
 ```bash
-go install .
+go install github.com/alex-vit/session-search@latest
 ```
 
 ## Usage
@@ -51,13 +49,10 @@ Example hook action:
 session-search --index-only >/dev/null 2>&1 || true
 ```
 
-## Performance
+## Why Go
 
 - Go binary startup: about `5ms`
 - Python startup: `500ms+`
-
-On a current corpus of `875` sessions, a full rebuild of the `34.2 MB` index
-takes about `3.3s` median.
 
 ## Example Skill
 
