@@ -193,7 +193,7 @@ search past pi, Claude Code, and Codex sessions
 
 Usage:
     session-search <query> [query2 ...]    Search for terms (OR'd together)
-    session-search --index-only            Index new or changed sessions and exit
+    session-search --index-only            Index new sessions and exit
     session-search --rebuild               Force full index rebuild
     session-search --stats                 Show index stats
     session-search --version               Show version
@@ -202,7 +202,7 @@ Options:
     --json          Output results as JSON
     --max N         Limit to N matches (also: --limit, -n)
     --group         Group results by session
-    --index-only    Index new or changed sessions without searching
+    --index-only    Index new sessions without searching
     --rebuild       Force full index rebuild
     --stats         Show index size and session count
     -v, --v, -version, --version
@@ -232,9 +232,8 @@ func resolvedVersion() string {
 	return version
 }
 
-// ensureIndex brings the index up to date if any session files are new,
-// changed, or removed. Safe to call from multiple processes; buildIndex runs
-// under flock.
+// ensureIndex brings the index up to date if any new session files exist.
+// Safe to call from multiple processes; buildIndex runs under flock.
 func ensureIndex() error {
 	if _, err := os.Stat(indexPath()); os.IsNotExist(err) || needsUpdate() {
 		return withIndexLock(func() error {
@@ -243,7 +242,7 @@ func ensureIndex() error {
 				return err
 			}
 			if n > 0 {
-				fmt.Fprintf(os.Stderr, "Indexed %d updated sessions.\n", n)
+				fmt.Fprintf(os.Stderr, "Indexed %d new sessions.\n", n)
 			}
 			return nil
 		})
@@ -254,17 +253,11 @@ func ensureIndex() error {
 func needsUpdate() bool {
 	allFiles := getAllSessionFileInfos()
 	indexed := getIndexedFiles(indexPath())
-	if len(allFiles) != len(indexed) {
-		return true
-	}
-
 	for _, file := range allFiles {
-		fingerprint, ok := indexed[file.Path]
-		if !ok || fingerprint != file.Fingerprint {
+		if _, ok := indexed[file.Path]; !ok {
 			return true
 		}
 	}
-
 	return false
 }
 
@@ -292,18 +285,9 @@ func withIndexLock(fn func() error) error {
 	return fn()
 }
 
-// buildIndex incrementally appends new sessions to the index. If any existing
-// session files changed or disappeared, it rewrites the full index so stale
-// content is replaced cleanly. This is intentionally blunt but correct for
-// now; it keeps search simple at the cost of slower updates when a single
-// session file grows.
-//
-// TODO: Replace the full-index rewrite path with a more incremental changed-
-// file update strategy (for example append-only blocks plus metadata/compaction)
-// so growing Codex sessions do not force a full rebuild.
-//
-// Returns the number of new or changed sessions processed. Must be called
-// under withIndexLock.
+// buildIndex incrementally appends new sessions to the index (or rebuilds it
+// from scratch when rebuild is true). Returns the number of newly indexed
+// sessions. Must be called under withIndexLock.
 func buildIndex(rebuild bool) (int, error) {
 	idxPath := indexPath()
 	allFiles := getAllSessionFileInfos()
@@ -313,32 +297,13 @@ func buildIndex(rebuild bool) (int, error) {
 	}
 
 	var newFiles []sessionFileInfo
-	var changedFiles []sessionFileInfo
 	for _, f := range allFiles {
-		fingerprint, ok := indexed[f.Path]
-		if !ok {
+		if _, ok := indexed[f.Path]; !ok {
 			newFiles = append(newFiles, f)
-			continue
-		}
-		if fingerprint != f.Fingerprint {
-			changedFiles = append(changedFiles, f)
 		}
 	}
 
-	removedFiles := 0
-	if !rebuild {
-		current := make(map[string]struct{}, len(allFiles))
-		for _, f := range allFiles {
-			current[f.Path] = struct{}{}
-		}
-		for path := range indexed {
-			if _, ok := current[path]; !ok {
-				removedFiles++
-			}
-		}
-	}
-
-	if !rebuild && len(newFiles) == 0 && len(changedFiles) == 0 && removedFiles == 0 {
+	if !rebuild && len(newFiles) == 0 {
 		return 0, nil
 	}
 
@@ -351,14 +316,11 @@ func buildIndex(rebuild bool) (int, error) {
 		return 0, nil
 	}
 
-	if rebuild || len(changedFiles) > 0 || removedFiles > 0 {
+	if rebuild {
 		if err := rewriteIndex(idxPath, allFiles); err != nil {
 			return 0, err
 		}
-		if rebuild {
-			return len(allFiles), nil
-		}
-		return len(newFiles) + len(changedFiles), nil
+		return len(allFiles), nil
 	}
 
 	f, err := os.OpenFile(idxPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // path constructed internally

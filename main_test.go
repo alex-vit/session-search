@@ -694,8 +694,8 @@ func TestBuildIndex_ReindexesChangedFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("changed-file buildIndex: %v", err)
 	}
-	if n2 != 1 {
-		t.Fatalf("expected changed file to be reindexed once, got %d", n2)
+	if n2 != 0 {
+		t.Fatalf("expected changed file to be ignored during incremental index, got %d", n2)
 	}
 
 	idxData, err := os.ReadFile(indexPath())
@@ -703,11 +703,38 @@ func TestBuildIndex_ReindexesChangedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := string(idxData)
-	if !strings.Contains(idx, "second version") {
-		t.Fatalf("reindexed file should contain latest content, got:\n%s", idx)
+	if strings.Contains(idx, "second version") {
+		t.Fatalf("changed file should not be reindexed during incremental index, got:\n%s", idx)
 	}
 	if strings.Count(idx, sessionPrefix) != 1 {
-		t.Fatalf("changed file should replace old index entry, got %d session markers", strings.Count(idx, sessionPrefix))
+		t.Fatalf("changed file should keep one existing index entry, got %d session markers", strings.Count(idx, sessionPrefix))
+	}
+}
+
+func TestNeedsUpdate_IgnoresChangedIndexedFile(t *testing.T) {
+	home := t.TempDir()
+	homeDir = home
+
+	sessDir := filepath.Join(home, ".codex", "sessions", "2026", "04", "10")
+	if err := os.MkdirAll(sessDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	session := filepath.Join(sessDir, "session1.jsonl")
+	if err := os.WriteFile(session, []byte(`{"type":"message","message":{"role":"user","content":"first"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := buildIndex(false); err != nil {
+		t.Fatalf("buildIndex: %v", err)
+	}
+
+	if err := os.WriteFile(session, []byte(`{"type":"message","message":{"role":"user","content":"first"}}`+"\n"+`{"type":"message","message":{"role":"assistant","content":"second"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if needsUpdate() {
+		t.Fatal("needsUpdate should ignore changes to already-indexed files")
 	}
 }
 
