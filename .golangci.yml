@@ -1,0 +1,39 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - dupword
+    - durationcheck
+    - errname
+    - errorlint
+    - fatcontext
+    - goconst
+    - gocritic
+    - gosec
+    - misspell
+    - nilerr
+    - noctx
+    - perfsprint
+    - reassign
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+
+  settings:
+    errcheck:
+      check-blank: true
+      exclude-functions:
+        - (*bufio.Writer).WriteString
+        - fmt.Fprintln
+        - fmt.Fprintf
+        - fmt.Fprint
+    gosec:
+      excludes:
+        - G104
+
+formatters:
+  enable:
+    - goimports
