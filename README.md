@@ -1,7 +1,8 @@
 # session-search
 
 Indexes local agent session history from pi, Claude Code, and Codex into a
-flat text index for fast full-text search.
+flat text index for fast full-text search. Incremental indexing picks up both
+new session files and existing session files that changed since the last index.
 
 ## Setup
 

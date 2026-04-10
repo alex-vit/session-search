@@ -622,8 +622,8 @@ func TestGetIndexedFiles(t *testing.T) {
 		t.Errorf("expected 0 indexed files for missing index, got %d", len(got))
 	}
 
-	content := sessionPrefix + "/path/to/session1.jsonl\n[user]\nhello\n\n" +
-		sessionPrefix + "/path/to/session2.jsonl\n[assistant]\nworld\n\n"
+	content := sessionPrefix + "/path/to/session1.jsonl\t123\t456\n[user]\nhello\n\n" +
+		sessionPrefix + "/path/to/session2.jsonl\t789\t999\n[assistant]\nworld\n\n"
 	if err := os.WriteFile(idxPath, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -632,8 +632,81 @@ func TestGetIndexedFiles(t *testing.T) {
 	if len(got) != 2 {
 		t.Errorf("expected 2 indexed files, got %d", len(got))
 	}
-	if !got["/path/to/session1.jsonl"] || !got["/path/to/session2.jsonl"] {
+	if got["/path/to/session1.jsonl"] != (sessionFingerprint{Size: 123, ModTimeNS: 456}) {
+		t.Errorf("wrong fingerprint for session1: %v", got["/path/to/session1.jsonl"])
+	}
+	if got["/path/to/session2.jsonl"] != (sessionFingerprint{Size: 789, ModTimeNS: 999}) {
+		t.Errorf("wrong fingerprint for session2: %v", got["/path/to/session2.jsonl"])
+	}
+}
+
+func TestGetIndexedFiles_LegacyHeader(t *testing.T) {
+	dir := t.TempDir()
+	idxPath := filepath.Join(dir, "index.txt")
+
+	content := sessionPrefix + "/path/to/session1.jsonl\n[user]\nhello\n\n"
+	if err := os.WriteFile(idxPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := getIndexedFiles(idxPath)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 indexed file, got %d", len(got))
+	}
+	if got["/path/to/session1.jsonl"] != (sessionFingerprint{}) {
 		t.Errorf("wrong indexed files: %v", got)
+	}
+}
+
+func TestBuildIndex_ReindexesChangedFile(t *testing.T) {
+	home := t.TempDir()
+	homeDir = home
+
+	sessDir := filepath.Join(home, ".codex", "sessions", "2026", "04", "10")
+	if err := os.MkdirAll(sessDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	session := filepath.Join(sessDir, "session1.jsonl")
+	if err := os.WriteFile(session, []byte(
+		`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first version"}]}}`+"\n",
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	n1, err := buildIndex(false)
+	if err != nil {
+		t.Fatalf("initial buildIndex: %v", err)
+	}
+	if n1 != 1 {
+		t.Fatalf("expected initial index count 1, got %d", n1)
+	}
+
+	if err := os.WriteFile(session, []byte(
+		`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first version"}]}}`+"\n"+
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"second version"}]}}`+"\n",
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	n2, err := buildIndex(false)
+	if err != nil {
+		t.Fatalf("changed-file buildIndex: %v", err)
+	}
+	if n2 != 1 {
+		t.Fatalf("expected changed file to be reindexed once, got %d", n2)
+	}
+
+	idxData, err := os.ReadFile(indexPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := string(idxData)
+	if !strings.Contains(idx, "second version") {
+		t.Fatalf("reindexed file should contain latest content, got:\n%s", idx)
+	}
+	if strings.Count(idx, sessionPrefix) != 1 {
+		t.Fatalf("changed file should replace old index entry, got %d session markers", strings.Count(idx, sessionPrefix))
 	}
 }
 

@@ -5,12 +5,12 @@
 //
 //  1. main → run parses CLI flags and dispatches to a subcommand.
 //  2. For search queries, ensureIndex is called first. It checks whether the
-//     on-disk index is stale (new JSONL files exist that aren't indexed yet)
-//     and, if so, acquires a file lock and calls buildIndex.
+//     on-disk index is stale (session JSONL files were added, changed, or
+//     removed) and, if so, acquires a file lock and calls buildIndex.
 //  3. buildIndex walks the pi (~/.pi/agent/sessions), Claude Code
 //     (~/.claude/projects), and Codex (~/.codex/sessions) session directories,
 //     diffs the discovered JSONL files against what's already in the index, and
-//     appends entries for new sessions. Each entry is a header line
+//     appends or refreshes entries as needed. Each entry is a header line
 //     ("### SESSION: <path>") followed by extracted content from that session.
 //  4. extractSession parses one JSONL file. It extracts user/assistant text,
 //     tool outputs (bash, Slack, Honeycomb, web search, etc.), thinking blocks,
@@ -57,6 +57,16 @@ var (
 	homeDir string
 	version = "dev"
 )
+
+type sessionFingerprint struct {
+	Size      int64
+	ModTimeNS int64
+}
+
+type sessionFileInfo struct {
+	Path        string
+	Fingerprint sessionFingerprint
+}
 
 func configDir() string {
 	return filepath.Join(homeDir, ".config", "session-search")
@@ -180,7 +190,7 @@ search past pi, Claude Code, and Codex sessions
 
 Usage:
     session-search <query> [query2 ...]    Search for terms (OR'd together)
-    session-search --index-only            Index new sessions and exit
+    session-search --index-only            Index new or changed sessions and exit
     session-search --rebuild               Force full index rebuild
     session-search --stats                 Show index stats
     session-search --version               Show version
@@ -189,7 +199,7 @@ Options:
     --json          Output results as JSON
     --max N         Limit to N matches (also: --limit, -n)
     --group         Group results by session
-    --index-only    Index new sessions without searching
+    --index-only    Index new or changed sessions without searching
     --rebuild       Force full index rebuild
     --stats         Show index size and session count
     -v, --v, -version, --version
@@ -201,8 +211,9 @@ func showVersion() {
 	fmt.Printf("session-search %s\n", version)
 }
 
-// ensureIndex brings the index up to date if any new session files exist.
-// Safe to call from multiple processes; buildIndex runs under flock.
+// ensureIndex brings the index up to date if any session files are new,
+// changed, or removed. Safe to call from multiple processes; buildIndex runs
+// under flock.
 func ensureIndex() error {
 	if _, err := os.Stat(indexPath()); os.IsNotExist(err) || needsUpdate() {
 		return withIndexLock(func() error {
@@ -211,7 +222,7 @@ func ensureIndex() error {
 				return err
 			}
 			if n > 0 {
-				fmt.Fprintf(os.Stderr, "Indexed %d new sessions.\n", n)
+				fmt.Fprintf(os.Stderr, "Indexed %d updated sessions.\n", n)
 			}
 			return nil
 		})
@@ -220,9 +231,20 @@ func ensureIndex() error {
 }
 
 func needsUpdate() bool {
-	allFiles := getAllSessionFiles()
+	allFiles := getAllSessionFileInfos()
 	indexed := getIndexedFiles(indexPath())
-	return len(allFiles) != len(indexed)
+	if len(allFiles) != len(indexed) {
+		return true
+	}
+
+	for _, file := range allFiles {
+		fingerprint, ok := indexed[file.Path]
+		if !ok || fingerprint != file.Fingerprint {
+			return true
+		}
+	}
+
+	return false
 }
 
 // withIndexLock acquires an exclusive flock on the index lock file,
@@ -249,31 +271,45 @@ func withIndexLock(fn func() error) error {
 	return fn()
 }
 
-// buildIndex incrementally appends new sessions to the index (or rebuilds it
-// from scratch when rebuild is true). Returns the number of newly indexed
-// sessions. Must be called under withIndexLock.
+// buildIndex incrementally appends new sessions to the index. If any existing
+// session files changed or disappeared, it rewrites the full index so stale
+// content is replaced cleanly. Returns the number of new or changed sessions
+// processed. Must be called under withIndexLock.
 func buildIndex(rebuild bool) (int, error) {
 	idxPath := indexPath()
-	if rebuild {
-		if err := os.Remove(idxPath); err != nil && !os.IsNotExist(err) {
-			return 0, fmt.Errorf("cannot remove old index: %w", err)
-		}
-	}
-
-	allFiles := getAllSessionFiles()
-	indexed := map[string]bool{}
+	allFiles := getAllSessionFileInfos()
+	indexed := map[string]sessionFingerprint{}
 	if !rebuild {
 		indexed = getIndexedFiles(idxPath)
 	}
 
-	var newFiles []string
+	var newFiles []sessionFileInfo
+	var changedFiles []sessionFileInfo
 	for _, f := range allFiles {
-		if !indexed[f] {
+		fingerprint, ok := indexed[f.Path]
+		if !ok {
 			newFiles = append(newFiles, f)
+			continue
+		}
+		if fingerprint != f.Fingerprint {
+			changedFiles = append(changedFiles, f)
 		}
 	}
 
-	if len(newFiles) == 0 {
+	removedFiles := 0
+	if !rebuild {
+		current := make(map[string]struct{}, len(allFiles))
+		for _, f := range allFiles {
+			current[f.Path] = struct{}{}
+		}
+		for path := range indexed {
+			if _, ok := current[path]; !ok {
+				removedFiles++
+			}
+		}
+	}
+
+	if !rebuild && len(newFiles) == 0 && len(changedFiles) == 0 && removedFiles == 0 {
 		return 0, nil
 	}
 
@@ -286,15 +322,49 @@ func buildIndex(rebuild bool) (int, error) {
 		return 0, nil
 	}
 
+	if rebuild || len(changedFiles) > 0 || removedFiles > 0 {
+		if err := rewriteIndex(idxPath, allFiles); err != nil {
+			return 0, err
+		}
+		if rebuild {
+			return len(allFiles), nil
+		}
+		return len(newFiles) + len(changedFiles), nil
+	}
+
 	f, err := os.OpenFile(idxPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // path constructed internally
 	if err != nil {
 		return 0, fmt.Errorf("cannot open index for writing: %w", err)
 	}
+	defer logClose(f)
 
 	w := bufio.NewWriter(f)
-	for _, path := range newFiles {
-		text := extractSession(path)
-		w.WriteString(sessionPrefix + path + "\n")
+	for _, file := range newFiles {
+		text := extractSession(file.Path)
+		w.WriteString(formatSessionHeader(file) + "\n")
+		if len(text) > 0 {
+			w.WriteString(text)
+		}
+		w.WriteString("\n")
+	}
+	if err := w.Flush(); err != nil {
+		return 0, fmt.Errorf("error writing index: %w", err)
+	}
+
+	return len(newFiles), nil
+}
+
+func rewriteIndex(idxPath string, files []sessionFileInfo) error {
+	tmpPath := idxPath + ".tmp"
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600) //nolint:gosec // path constructed internally
+	if err != nil {
+		return fmt.Errorf("cannot open temp index for writing: %w", err)
+	}
+
+	w := bufio.NewWriter(f)
+	for _, file := range files {
+		text := extractSession(file.Path)
+		w.WriteString(formatSessionHeader(file) + "\n")
 		if len(text) > 0 {
 			w.WriteString(text)
 		}
@@ -302,17 +372,19 @@ func buildIndex(rebuild bool) (int, error) {
 	}
 	if err := w.Flush(); err != nil {
 		logClose(f)
-		return 0, fmt.Errorf("error writing index: %w", err)
+		return fmt.Errorf("error writing index: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		return 0, fmt.Errorf("error closing index: %w", err)
+		return fmt.Errorf("error closing temp index: %w", err)
 	}
-
-	return len(newFiles), nil
+	if err := os.Rename(tmpPath, idxPath); err != nil {
+		return fmt.Errorf("cannot replace index: %w", err)
+	}
+	return nil
 }
 
-func getAllSessionFiles() []string {
-	var files []string
+func getAllSessionFileInfos() []sessionFileInfo {
+	var files []sessionFileInfo
 	for _, src := range sessionSources() {
 		info, err := os.Stat(src.dir)
 		if err != nil || !info.IsDir() {
@@ -331,18 +403,35 @@ func getAllSessionFiles() []string {
 			if len(src.exclude) > 0 && strings.Contains(path, src.exclude) {
 				return nil
 			}
-			files = append(files, path)
+			files = append(files, sessionFileInfo{
+				Path: path,
+				Fingerprint: sessionFingerprint{
+					Size:      fi.Size(),
+					ModTimeNS: fi.ModTime().UnixNano(),
+				},
+			})
 			return nil
 		}); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: error walking %s: %v\n", src.dir, err)
 		}
 	}
-	sort.Strings(files)
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].Path < files[j].Path
+	})
 	return files
 }
 
-func getIndexedFiles(idxPath string) map[string]bool {
-	indexed := make(map[string]bool)
+func getAllSessionFiles() []string {
+	fileInfos := getAllSessionFileInfos()
+	files := make([]string, 0, len(fileInfos))
+	for _, fileInfo := range fileInfos {
+		files = append(files, fileInfo.Path)
+	}
+	return files
+}
+
+func getIndexedFiles(idxPath string) map[string]sessionFingerprint {
+	indexed := make(map[string]sessionFingerprint)
 	f, err := os.Open(idxPath) //nolint:gosec // index path is constructed internally
 	if err != nil {
 		return indexed
@@ -353,10 +442,34 @@ func getIndexedFiles(idxPath string) map[string]bool {
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, sessionPrefix) {
-			indexed[line[len(sessionPrefix):]] = true
+			path, fingerprint := parseSessionHeader(line)
+			indexed[path] = fingerprint
 		}
 	}
 	return indexed
+}
+
+func formatSessionHeader(file sessionFileInfo) string {
+	return fmt.Sprintf("%s%s\t%d\t%d", sessionPrefix, file.Path, file.Fingerprint.Size, file.Fingerprint.ModTimeNS)
+}
+
+func parseSessionHeader(line string) (string, sessionFingerprint) {
+	raw := line[len(sessionPrefix):]
+	parts := strings.Split(raw, "\t")
+	if len(parts) != 3 {
+		return raw, sessionFingerprint{}
+	}
+
+	size, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return raw, sessionFingerprint{}
+	}
+	modTimeNS, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil {
+		return raw, sessionFingerprint{}
+	}
+
+	return parts[0], sessionFingerprint{Size: size, ModTimeNS: modTimeNS}
 }
 
 type jsonlMessage struct {
@@ -981,7 +1094,7 @@ func searchGrouped(lines []string, matches matchFunc, maxResults int) {
 
 	for _, line := range lines {
 		if strings.HasPrefix(line, sessionPrefix) {
-			currentSession = line[len(sessionPrefix):]
+			currentSession, _ = parseSessionHeader(line)
 			continue
 		}
 		if matches(line) {
@@ -1028,7 +1141,7 @@ func searchJSON(lines []string, matches matchFunc, maxResults int) error {
 
 	for _, line := range lines {
 		if strings.HasPrefix(line, sessionPrefix) {
-			currentSession = line[len(sessionPrefix):]
+			currentSession, _ = parseSessionHeader(line)
 			continue
 		}
 		if matches(line) {
