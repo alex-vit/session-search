@@ -19,6 +19,13 @@ session-search --max 20 "sentry trace"
 session-search --json "release checklist"
 ```
 
+## Example Skill
+
+One of the main use cases is wiring `session-search` into a skill so an agent
+can recover prior context instead of guessing.
+
+- [examples/SKILL.md](./examples/SKILL.md)
+
 ## What It Indexes
 
 - `~/.pi/agent/sessions`
@@ -53,7 +60,3 @@ session-search --index-only >/dev/null 2>&1 || true
 
 - Go binary startup: about `5ms`
 - Python startup: `500ms+`
-
-## Example Skill
-
-- [examples/SKILL.md](./examples/SKILL.md)

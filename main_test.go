@@ -755,11 +755,31 @@ func TestRun_Help(t *testing.T) {
 		}
 	})
 
-	if !strings.Contains(output, "session-search - search past pi, Claude Code, and Codex sessions") {
+	if !strings.HasPrefix(output, "session-search dev\n\n") {
+		t.Fatalf("help output should start with version banner:\n%s", output)
+	}
+	if !strings.Contains(output, "search past pi, Claude Code, and Codex sessions") {
 		t.Fatalf("help output missing banner:\n%s", output)
 	}
 	if !strings.Contains(output, "--rebuild") {
 		t.Fatalf("help output missing flags:\n%s", output)
+	}
+}
+
+func TestRun_VersionFlags(t *testing.T) {
+	flags := []string{"-v", "--v", "-version", "--version"}
+	for _, flag := range flags {
+		t.Run(flag, func(t *testing.T) {
+			output := captureStdout(t, func() {
+				if err := run([]string{flag}); err != nil {
+					t.Fatalf("run(%s): %v", flag, err)
+				}
+			})
+
+			if output != "session-search dev\n" {
+				t.Fatalf("unexpected version output for %s: %q", flag, output)
+			}
+		})
 	}
 }
 

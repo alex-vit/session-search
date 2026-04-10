@@ -53,7 +53,10 @@ const (
 	blockText      = "text"
 )
 
-var homeDir string
+var (
+	homeDir string
+	version = "dev"
+)
 
 func configDir() string {
 	return filepath.Join(homeDir, ".config", "session-search")
@@ -109,6 +112,9 @@ func run(args []string) error {
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "-v", "--v", "-version", "--version":
+			showVersion()
+			return nil
 		case "--index-only":
 			return ensureIndex()
 		case "--rebuild":
@@ -168,13 +174,16 @@ func run(args []string) error {
 }
 
 func usage() {
-	fmt.Print(`session-search - search past pi, Claude Code, and Codex sessions
+	fmt.Printf(`session-search %s
+
+search past pi, Claude Code, and Codex sessions
 
 Usage:
     session-search <query> [query2 ...]    Search for terms (OR'd together)
     session-search --index-only            Index new sessions and exit
     session-search --rebuild               Force full index rebuild
     session-search --stats                 Show index stats
+    session-search --version               Show version
 
 Options:
     --json          Output results as JSON
@@ -183,7 +192,13 @@ Options:
     --index-only    Index new sessions without searching
     --rebuild       Force full index rebuild
     --stats         Show index size and session count
-`)
+    -v, --v, -version, --version
+                    Show version
+`, version)
+}
+
+func showVersion() {
+	fmt.Printf("session-search %s\n", version)
 }
 
 // ensureIndex brings the index up to date if any new session files exist.
