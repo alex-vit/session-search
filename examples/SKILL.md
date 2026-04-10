@@ -1,12 +1,12 @@
 ---
-name: past-session-search
-description: Search prior local sessions for relevant discussion, decisions, commands, and tool output.
+name: session-search
+description: Use session-search to recover relevant discussion, decisions, commands, and tool output from prior local sessions.
 ---
 
-# Past Session Search
+# Session Search
 
-Use a local session-search tool when you need to recover context from earlier
-sessions instead of guessing or re-deriving it.
+Use `session-search` when you need to recover context from earlier sessions
+instead of guessing or re-deriving it.
 
 ## When To Use It
 
